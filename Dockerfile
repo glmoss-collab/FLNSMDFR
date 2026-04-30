@@ -56,37 +56,9 @@ COPY --from=builder /build/wheels /wheels
 RUN pip install --no-cache-dir /wheels/* \
     && rm -rf /wheels
 
-# Copy application files
-# Core estimation modules
-COPY --chown=appuser:appgroup streamlit_app.py .
-COPY --chown=appuser:appgroup agent_estimation_app.py .
-COPY --chown=appuser:appgroup hvac_insulation_estimator.py .
-COPY --chown=appuser:appgroup claude_estimation_agent.py .
-COPY --chown=appuser:appgroup claude_agent_tools.py .
-
-# Utility modules
-COPY --chown=appuser:appgroup utils_cache.py .
-COPY --chown=appuser:appgroup utils_async.py .
-COPY --chown=appuser:appgroup utils_tracking.py .
-COPY --chown=appuser:appgroup utils_pdf.py .
-COPY --chown=appuser:appgroup pydantic_models.py .
-COPY --chown=appuser:appgroup errors.py .
-
-# GCP integration modules (new)
-COPY --chown=appuser:appgroup cloud_config.py .
-COPY --chown=appuser:appgroup gcs_storage.py .
-COPY --chown=appuser:appgroup firestore_cache.py .
-COPY --chown=appuser:appgroup secrets_manager.py .
-
-# Legacy/alternative modules
-COPY --chown=appuser:appgroup gemini_pdf_extractor.py .
-
-# Data files
-COPY --chown=appuser:appgroup pricebook_sample.json .
-COPY --chown=appuser:appgroup measurements_template.csv .
-
-# Streamlit configuration
-COPY --chown=appuser:appgroup .streamlit/ .streamlit/
+# Copy application source. Excludes are governed by .dockerignore
+# (.git, _diffs, __pycache__, tests, docs, etc.)
+COPY --chown=appuser:appgroup . .
 
 # Create cache directory with proper permissions
 RUN mkdir -p /app/.cache && chown -R appuser:appgroup /app/.cache
@@ -101,9 +73,8 @@ EXPOSE ${PORT}
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl --fail http://localhost:${PORT}/_stcore/health || exit 1
 
-# Entrypoint script to support $PORT environment variable
-# Cloud Run sets PORT, local development uses default 8501
-CMD sh -c 'streamlit run agent_estimation_app.py \
+# Entrypoint — Cloud Run sets PORT; local dev defaults to 8501.
+CMD sh -c 'streamlit run guaranteed_insulation_app.py \
     --server.port=${PORT} \
     --server.address=0.0.0.0 \
     --server.headless=true \

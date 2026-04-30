@@ -9,7 +9,7 @@ import hashlib
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -152,11 +152,17 @@ class FirestoreCache(CacheBackend):
         raw = f"{category}:{key}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
-    def _expired(self, doc: Dict[str, Any]) -> bool:
+    @staticmethod
+    def _expired(doc: Dict[str, Any]) -> bool:
+        # Firestore returns DatetimeWithNanoseconds (tz-aware UTC, subclass of
+        # datetime.datetime). Treat a missing field as expired so a malformed
+        # doc evicts itself instead of crashing.
         expires_at = doc.get("expires_at")
-        if hasattr(expires_at, "timestamp"):
-            expires_at = expires_at.datetime()
-        return datetime.now() > expires_at
+        if expires_at is None:
+            return True
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return datetime.now(tz=timezone.utc) > expires_at
 
     def get(self, key: str, category: str = "default") -> Optional[Any]:
         doc = self.collection.document(self._doc_id(key, category)).get()
@@ -177,7 +183,7 @@ class FirestoreCache(CacheBackend):
             "key": key,
             "category": category,
             "value": value,
-            "expires_at": datetime.now() + timedelta(seconds=ttl)
+            "expires_at": datetime.now(tz=timezone.utc) + timedelta(seconds=ttl)
         })
 
     def invalidate(self, key: str, category: str = "default") -> None:
