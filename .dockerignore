@@ -1,0 +1,43 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Build / CI artifacts not needed at runtime
+Dockerfile
+.dockerignore
+cloudbuild.yaml
+sync_proinsulation_files.ps1
+
+# Python bytecode and caches
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Virtual envs
+.venv
+venv
+env
+
+# IDE / editor
+.vscode
+.idea
+.claude
+*.swp
+.DS_Store
+
+# Migration / archive content not needed in image
+_diffs
+docs
+
+# Tests not needed at runtime
+tests
+
+# Local artifacts
+.cache
+*.log

@@ -159,7 +159,7 @@ spec:
       containerConcurrency: 10
       timeoutSeconds: 300
       containers:
-        - image: gcr.io/PROJECT_ID/hvac-estimator:latest
+        - image: us-central1-docker.pkg.dev/PROJECT_ID/hvac/hvac-estimator:latest
           ports:
             - containerPort: 8501
           env:
@@ -347,15 +347,29 @@ export ANTHROPIC_API_KEY=your-key
 streamlit run agent_estimation_app.py
 ```
 
+### One-Time Artifact Registry Setup
+
+```bash
+# Create the Docker repository (replaces deprecated gcr.io)
+gcloud artifacts repositories create hvac \
+  --repository-format=docker \
+  --location=us-central1 \
+  --description="HVAC estimator container images"
+
+# Configure Docker auth for the new registry
+gcloud auth configure-docker us-central1-docker.pkg.dev
+```
+
 ### GCP Staging
 
 ```bash
 # Build and push container
-gcloud builds submit --tag gcr.io/PROJECT_ID/hvac-estimator:staging
+gcloud builds submit \
+  --tag us-central1-docker.pkg.dev/PROJECT_ID/hvac/hvac-estimator:staging
 
 # Deploy to Cloud Run
 gcloud run deploy hvac-estimator-staging \
-  --image gcr.io/PROJECT_ID/hvac-estimator:staging \
+  --image us-central1-docker.pkg.dev/PROJECT_ID/hvac/hvac-estimator:staging \
   --region us-central1 \
   --allow-unauthenticated \
   --set-env-vars GCP_PROJECT=PROJECT_ID,CACHE_BACKEND=firestore,STORAGE_BACKEND=gcs
@@ -365,11 +379,12 @@ gcloud run deploy hvac-estimator-staging \
 
 ```bash
 # Build with production tag
-gcloud builds submit --tag gcr.io/PROJECT_ID/hvac-estimator:prod
+gcloud builds submit \
+  --tag us-central1-docker.pkg.dev/PROJECT_ID/hvac/hvac-estimator:prod
 
 # Deploy with IAP (no unauthenticated access)
 gcloud run deploy hvac-estimator \
-  --image gcr.io/PROJECT_ID/hvac-estimator:prod \
+  --image us-central1-docker.pkg.dev/PROJECT_ID/hvac/hvac-estimator:prod \
   --region us-central1 \
   --no-allow-unauthenticated \
   --service-account hvac-estimator-sa@PROJECT_ID.iam.gserviceaccount.com \
@@ -462,7 +477,7 @@ gcloud run services update-traffic hvac-estimator \
 ```bash
 # Deploy previous image version
 gcloud run deploy hvac-estimator \
-  --image gcr.io/PROJECT_ID/hvac-estimator:previous-tag
+  --image us-central1-docker.pkg.dev/PROJECT_ID/hvac/hvac-estimator:previous-tag
 ```
 
 ---
