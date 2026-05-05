@@ -48,7 +48,7 @@ steps:
       - '-c'
       - |
         pip install -r requirements.txt
-        pytest tests/ -v --tb=short || echo "Tests completed (some may be skipped without API keys)"
+        pytest tests/ -v --tb=short
 
   # -------------------------------------------------------------------------
   # Step 2: Build Docker Image (Artifact Registry)
