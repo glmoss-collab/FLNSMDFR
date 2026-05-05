@@ -13,20 +13,81 @@ Usage:
     result = skill.run("Extract project info from specs.pdf")
 """
 
-import os
+import hashlib
 import json
-from typing import Dict, Any, List, Optional
+import logging
+import os
+import tempfile
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
 from anthropic import Anthropic
+
 from claude_agent_tools import (
+    AGENT_TOOLS,
+    extract_measurements,
     extract_project_info,
     extract_specifications,
-    extract_measurements,
-    validate_specifications,
-    cross_reference_data,
-    calculate_pricing,
-    generate_quote,
-    get_tool_schemas
+    get_tool_schemas,
 )
+from prompts import get_prompt
+
+logger = logging.getLogger(__name__)
+
+
+def _materialize_source(source: str) -> Tuple[str, Callable[[], None]]:
+    """Resolve a project document source to a local filesystem path.
+
+    Local paths are returned unchanged with a no-op cleanup. ``gs://`` URIs
+    are downloaded via :class:`gcs_storage.GCSStorage` to a temporary file,
+    and the returned cleanup deletes that file.
+    """
+    if not source.startswith("gs://"):
+        return source, lambda: None
+
+    bucket, _, key = source[len("gs://"):].partition("/")
+    if not bucket or not key:
+        raise ValueError(f"Invalid GCS URI: {source!r}")
+
+    from gcs_storage import GCSStorage
+
+    data = GCSStorage(bucket_name=bucket).download_file(key)
+    suffix = Path(key).suffix or ".pdf"
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="flnsmdfr_")
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+
+    def _cleanup() -> None:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    return tmp_path, _cleanup
+
+
+def _get_project_cache() -> Optional[Any]:
+    """Return a cache backend for project-analysis idempotency.
+
+    Honors ``CACHE_BACKEND=firestore`` (matches cloudbuild.yaml deploys) when
+    google-cloud-firestore is available; otherwise falls back to FileCache.
+    Returns None only if no backend can be constructed.
+    """
+    backend = os.getenv("CACHE_BACKEND", "file").lower()
+    if backend == "firestore":
+        try:
+            from firestore_cache import FirestoreCache
+            return FirestoreCache()
+        except ImportError:
+            logger.info("Firestore cache unavailable; falling back to file cache")
+        except Exception as exc:
+            logger.warning("Firestore cache init failed (%s); falling back to file cache", exc)
+    try:
+        from utils_cache import get_cache
+        return get_cache()
+    except Exception as exc:
+        logger.warning("File cache init failed: %s", exc)
+        return None
 
 
 class HVACInsulationSkill:
@@ -81,16 +142,9 @@ class HVACInsulationSkill:
         self.model = model
         self.max_tokens = max_tokens
 
-        # Register tools
-        self.tools = {
-            "extract_project_info": extract_project_info,
-            "extract_specifications": extract_specifications,
-            "extract_measurements": extract_measurements,
-            "validate_specifications": validate_specifications,
-            "cross_reference_data": cross_reference_data,
-            "calculate_pricing": calculate_pricing,
-            "generate_quote": generate_quote,
-        }
+        # Register tools. Source of truth is claude_agent_tools.AGENT_TOOLS;
+        # extending the agent's capability surface should happen there.
+        self.tools = dict(AGENT_TOOLS)
 
         # Get tool schemas
         self.tool_schemas = get_tool_schemas()
@@ -112,34 +166,8 @@ class HVACInsulationSkill:
         self.system_prompt = self._get_system_prompt()
 
     def _get_system_prompt(self) -> str:
-        """Get the system prompt for the HVAC insulation estimation agent."""
-        return """You are an expert HVAC insulation estimation assistant with deep knowledge of:
-- Mechanical systems (HVAC ducts, pipes, equipment)
-- Insulation materials (fiberglass, elastomeric, cellular glass, etc.)
-- Industry standards (ASHRAE, SMACNA, mechanical codes)
-- Construction documentation (specifications, drawings, schedules)
-- Material pricing and labor estimation
-
-Your role is to help users:
-1. Extract project information from construction documents
-2. Identify insulation specifications from spec sections
-3. Measure HVAC systems from mechanical drawings
-4. Validate specifications against industry standards
-5. Cross-reference specifications with measurements
-6. Calculate material quantities and pricing
-7. Generate professional project quotes
-
-You have access to specialized tools for each of these tasks. Use them systematically
-to analyze documents and provide accurate estimates.
-
-When analyzing documents:
-- Be thorough and detail-oriented
-- Note any ambiguities or missing information
-- Provide confidence scores for extracted data
-- Flag potential issues or conflicts
-- Suggest clarifications when needed
-
-Always maintain professionalism and focus on accuracy."""
+        """Get the system prompt (versioned in prompts/hvac_skill.py)."""
+        return get_prompt("hvac_skill.system")
 
     def run(
         self,
@@ -374,6 +402,54 @@ Always maintain professionalism and focus on accuracy."""
 
         return "\n".join(text_parts)
 
+    def analyze_project(
+        self,
+        source: str,
+        force_refresh: bool = False,
+        max_iterations: int = 10,
+    ) -> Dict[str, Any]:
+        """Run a complete project analysis from a GCS URI or local path.
+
+        ``source`` may be a ``gs://bucket/key`` URI (downloaded via
+        gcs_storage.GCSStorage to a temporary file) or a local filesystem path.
+        Successful results are cached keyed by the source URI so re-invoking
+        with the same source is idempotent until ``force_refresh=True``.
+
+        Returns the same dict shape as :meth:`run`, with two extra keys:
+        ``"source"`` (the original URI/path) and ``"from_cache"`` (bool).
+        """
+        cache_key = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        cache = _get_project_cache()
+
+        if not force_refresh and cache is not None:
+            cached = cache.get(cache_key, category="project_analysis")
+            if cached is not None:
+                logger.info("analyze_project cache hit for %s", source)
+                cached["from_cache"] = True
+                return cached
+
+        local_path, cleanup = _materialize_source(source)
+        try:
+            result = self.run(
+                f"Please perform a complete HVAC insulation estimation for the document at {local_path}. "
+                f"Extract project information, specifications, and measurements, then validate, "
+                f"cross-reference, calculate pricing, and generate a quote.",
+                max_iterations=max_iterations,
+            )
+        finally:
+            cleanup()
+
+        result["source"] = source
+        result["from_cache"] = False
+
+        if cache is not None and result.get("success"):
+            try:
+                cache.set(cache_key, result, category="project_analysis", ttl=86400)
+            except Exception as exc:
+                logger.warning("Failed to cache project analysis: %s", exc)
+
+        return result
+
     def reset_session(self) -> None:
         """
         Reset the session data and conversation history.
@@ -490,41 +566,18 @@ Always maintain professionalism and focus on accuracy."""
 
 def quick_estimate(
     pdf_path: str,
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    force_refresh: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Quick estimation workflow for a single PDF document.
+    """Quick estimation workflow for a single PDF document.
 
-    This function performs a complete estimation workflow:
-    1. Extract project information
-    2. Extract specifications
-    3. Extract measurements
-    4. Validate specifications
-    5. Cross-reference data
-    6. Calculate pricing
-    7. Generate quote
+    Thin wrapper around :meth:`HVACInsulationSkill.analyze_project` so the
+    cache-and-GCS-aware code path is the single source of truth.
 
-    Args:
-        pdf_path: Path to the PDF document (specs or drawings)
-        api_key: Anthropic API key (optional if set in environment)
-
-    Returns:
-        Dictionary with complete estimation results
-
-    Example:
-        >>> result = quick_estimate("/path/to/project.pdf")
-        >>> print(result['quote'])
+    ``pdf_path`` may be a local filesystem path or a ``gs://bucket/key`` URI.
     """
     skill = HVACInsulationSkill(api_key=api_key)
-
-    # Run complete estimation
-    result = skill.run(
-        f"Please perform a complete HVAC insulation estimation for the document at {pdf_path}. "
-        f"Extract project information, specifications, and measurements, then validate, "
-        f"cross-reference, calculate pricing, and generate a quote."
-    )
-
-    return result
+    return skill.analyze_project(pdf_path, force_refresh=force_refresh)
 
 
 def extract_specs_only(

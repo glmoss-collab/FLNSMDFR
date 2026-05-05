@@ -46,7 +46,10 @@ class MessagesResponse:
 class VertexAIMessagesClient:
     def __init__(self, project_id: str, region: str = DEFAULT_REGION, credentials: Any = None):
         if region not in SUPPORTED_REGIONS:
-            logger.warning(f"Region {region} may not support Claude")
+            raise ValueError(
+                f"Region '{region}' is not supported for Claude on Vertex AI. "
+                f"Choose one of: {', '.join(SUPPORTED_REGIONS)}."
+            )
         self.project_id = project_id
         self.region = region
         self.credentials = credentials
@@ -71,7 +74,24 @@ class VertexAIMessagesClient:
             self.credentials.refresh(self._Request())
         return self.credentials.token
 
-    def create(self, model: str = VERTEX_CLAUDE_OPUS_MODEL, max_tokens: int = 4096, messages: Optional[List[Dict[str, Any]]] = None, temperature: float = 1.0, **kwargs) -> MessagesResponse:
+    def create(
+        self,
+        model: str = VERTEX_CLAUDE_OPUS_MODEL,
+        max_tokens: int = 4096,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        temperature: float = 1.0,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs,
+    ) -> MessagesResponse:
+        """Send a Messages-API request to Claude on Vertex AI.
+
+        ``tools`` is passed through to the request payload. For Anthropic
+        client-side tools, use the standard ``{"name", "description",
+        "input_schema"}`` shape (see :func:`claude_agent_tools.get_tool_schemas`).
+        For Google Search Grounding, use :func:`google_search_retrieval` to
+        produce the tool dict — see that helper's caveat about availability
+        through the Anthropic-on-Vertex endpoint.
+        """
         payload = {
             "anthropic_version": "vertex-2023-10-16",
             "model": model,
@@ -79,6 +99,8 @@ class VertexAIMessagesClient:
             "messages": messages or [],
             "temperature": temperature,
         }
+        if tools:
+            payload["tools"] = tools
         payload.update(kwargs)
         url = f"{self._endpoint(model)}:streamRawPredict"
         headers = {
@@ -100,6 +122,30 @@ class VertexAIClaudeClient:
             raise ValueError("GCP_PROJECT is required for Vertex AI Claude client")
         self.region = region or os.getenv("GCP_REGION", DEFAULT_REGION)
         self.messages = VertexAIMessagesClient(project_id=self.project_id, region=self.region, credentials=credentials)
+
+
+def google_search_retrieval(disable_attribution: bool = False) -> Dict[str, Any]:
+    """Return the Vertex-AI grounding tool dict for Google Search retrieval.
+
+    Mirrors the shape of ``vertexai.preview.generative_models.grounding.
+    GoogleSearchRetrieval`` so callers can do::
+
+        client.messages.create(
+            tools=[google_search_retrieval()],
+            messages=[...],
+        )
+
+    Caveat: Vertex AI's Google Search Grounding is currently exposed for
+    Gemini models. The Anthropic-on-Vertex endpoint used by
+    :class:`VertexAIMessagesClient` does not yet honor this tool — the request
+    will be forwarded but Claude on Vertex will not consult Search. This
+    helper is here as the integration surface for when that capability
+    extends to Claude, and so call sites stop hard-coding the dict shape.
+    """
+    config: Dict[str, Any] = {}
+    if disable_attribution:
+        config["disable_attribution"] = True
+    return {"google_search_retrieval": config}
 
 
 def get_claude_client(api_key: Optional[str] = None, project_id: Optional[str] = None, region: Optional[str] = None, use_vertex_ai: Optional[bool] = None):

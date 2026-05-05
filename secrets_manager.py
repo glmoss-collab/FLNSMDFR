@@ -5,9 +5,33 @@ Supports local env fallback and Google Secret Manager retrieval.
 
 import os
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+_client: Any = None
+_client_unavailable: bool = False
+
+
+def _get_client() -> Any:
+    """Lazily import and cache the Secret Manager client.
+
+    Returns None when the google-cloud-secret-manager SDK is not installed
+    (e.g. local dev without GCP extras). Callers must handle None.
+    """
+    global _client, _client_unavailable
+    if _client is not None or _client_unavailable:
+        return _client
+    try:
+        from google.cloud import secretmanager
+    except ImportError:
+        logger.info(
+            "google-cloud-secret-manager not installed; Secret Manager lookups disabled"
+        )
+        _client_unavailable = True
+        return None
+    _client = secretmanager.SecretManagerServiceClient()
+    return _client
 
 
 def get_secret(secret_name: str, project_id: Optional[str] = None) -> Optional[str]:
@@ -22,13 +46,14 @@ def get_secret(secret_name: str, project_id: Optional[str] = None) -> Optional[s
         logger.warning("No GCP_PROJECT configured and secret is not in environment")
         return None
 
-    try:
-        from google.cloud import secretmanager
-    except ImportError as exc:
-        raise ImportError("google-cloud-secret-manager is required for Secret Manager access") from exc
+    client = _get_client()
+    if client is None:
+        return None
 
-    client = secretmanager.SecretManagerServiceClient()
-    name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
-    response = client.access_secret_version(request={"name": name})
-    payload = response.payload.data.decode("UTF-8")
-    return payload
+    try:
+        name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
+        response = client.access_secret_version(request={"name": name})
+        return response.payload.data.decode("UTF-8")
+    except Exception as exc:
+        logger.warning("Secret Manager lookup failed for %s: %s", secret_name, exc)
+        return None
