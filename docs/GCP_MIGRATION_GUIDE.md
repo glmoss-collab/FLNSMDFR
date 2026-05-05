@@ -69,16 +69,18 @@ This document provides a comprehensive pathway for migrating the Professional In
 
 ### Current vs. Target State
 
-| Component | Current State | Target State (GCP) |
-|-----------|--------------|-------------------|
-| **Compute** | Local Docker/VM | Cloud Run (serverless) |
-| **Caching** | File-based (`.cache/`) | Firestore + Redis (Memorystore) |
-| **File Storage** | Local filesystem | Cloud Storage (GCS) |
-| **Secrets** | Environment variables | Secret Manager |
-| **Logging** | Python logging | Cloud Logging |
-| **Monitoring** | None | Cloud Monitoring |
-| **Authentication** | None | Identity-Aware Proxy (IAP) |
-| **AI Services** | Direct API calls | Vertex AI (optional) |
+
+| Component          | Current State          | Target State (GCP)              |
+| ------------------ | ---------------------- | ------------------------------- |
+| **Compute**        | Local Docker/VM        | Cloud Run (serverless)          |
+| **Caching**        | File-based (`.cache/`) | Firestore + Redis (Memorystore) |
+| **File Storage**   | Local filesystem       | Cloud Storage (GCS)             |
+| **Secrets**        | Environment variables  | Secret Manager                  |
+| **Logging**        | Python logging         | Cloud Logging                   |
+| **Monitoring**     | None                   | Cloud Monitoring                |
+| **Authentication** | None                   | Identity-Aware Proxy (IAP)      |
+| **AI Services**    | Direct API calls       | Vertex AI (optional)            |
+
 
 ---
 
@@ -88,50 +90,58 @@ This document provides a comprehensive pathway for migrating the Professional In
 
 **Goal:** Establish cloud-native infrastructure patterns
 
-| Task | Priority | Effort | Status |
-|------|----------|--------|--------|
-| Update Dockerfile for Cloud Run | P0 | 4h | ⬜ |
-| Create cloud_config.py | P0 | 4h | ⬜ |
-| Create gcs_storage.py | P0 | 8h | ⬜ |
-| Create firestore_cache.py | P0 | 8h | ⬜ |
-| Create secrets_manager.py | P1 | 4h | ⬜ |
-| Update requirements.txt | P1 | 1h | ⬜ |
-| Create cloudbuild.yaml | P1 | 4h | ⬜ |
+
+| Task                            | Priority | Effort | Status |
+| ------------------------------- | -------- | ------ | ------ |
+| Update Dockerfile for Cloud Run | P0       | 4h     | ⬜      |
+| Create cloud_config.py          | P0       | 4h     | ⬜      |
+| Create gcs_storage.py           | P0       | 8h     | ⬜      |
+| Create firestore_cache.py       | P0       | 8h     | ⬜      |
+| Create secrets_manager.py       | P1       | 4h     | ⬜      |
+| Update requirements.txt         | P1       | 1h     | ⬜      |
+| Create cloudbuild.yaml          | P1       | 4h     | ⬜      |
+
 
 ### Phase 2: Integration (Week 2-3)
 
 **Goal:** Integrate cloud services into application
 
-| Task | Priority | Effort | Status |
-|------|----------|--------|--------|
-| Update streamlit_app.py for GCS | P0 | 8h | ⬜ |
-| Update agent_estimation_app.py for GCS | P0 | 8h | ⬜ |
-| Update utils_cache.py with Firestore backend | P0 | 6h | ⬜ |
-| Update gemini_pdf_extractor.py | P1 | 4h | ⬜ |
-| Add Cloud Logging integration | P1 | 4h | ⬜ |
+
+| Task                                         | Priority | Effort | Status |
+| -------------------------------------------- | -------- | ------ | ------ |
+| Update streamlit_app.py for GCS              | P0       | 8h     | ⬜      |
+| Update agent_estimation_app.py for GCS       | P0       | 8h     | ⬜      |
+| Update utils_cache.py with Firestore backend | P0       | 6h     | ⬜      |
+| Update gemini_pdf_extractor.py               | P1       | 4h     | ⬜      |
+| Add Cloud Logging integration                | P1       | 4h     | ⬜      |
+
 
 ### Phase 3: Security & Observability (Week 3-4)
 
 **Goal:** Enterprise-grade security and monitoring
 
-| Task | Priority | Effort | Status |
-|------|----------|--------|--------|
-| Configure Identity-Aware Proxy | P1 | 4h | ⬜ |
-| Set up Cloud Monitoring dashboards | P1 | 4h | ⬜ |
-| Configure alerting policies | P2 | 2h | ⬜ |
-| Security review and hardening | P1 | 8h | ⬜ |
-| Load testing | P2 | 4h | ⬜ |
+
+| Task                               | Priority | Effort | Status |
+| ---------------------------------- | -------- | ------ | ------ |
+| Configure Identity-Aware Proxy     | P1       | 4h     | ⬜      |
+| Set up Cloud Monitoring dashboards | P1       | 4h     | ⬜      |
+| Configure alerting policies        | P2       | 2h     | ⬜      |
+| Security review and hardening      | P1       | 8h     | ⬜      |
+| Load testing                       | P2       | 4h     | ⬜      |
+
 
 ### Phase 4: Production Deployment (Week 4)
 
 **Goal:** Go-live with production environment
 
-| Task | Priority | Effort | Status |
-|------|----------|--------|--------|
-| Deploy to production Cloud Run | P0 | 4h | ⬜ |
-| Configure production secrets | P0 | 2h | ⬜ |
-| Set up CI/CD pipeline | P1 | 4h | ⬜ |
-| Documentation and runbooks | P1 | 4h | ⬜ |
+
+| Task                           | Priority | Effort | Status |
+| ------------------------------ | -------- | ------ | ------ |
+| Deploy to production Cloud Run | P0       | 4h     | ⬜      |
+| Configure production secrets   | P0       | 2h     | ⬜      |
+| Set up CI/CD pipeline          | P1       | 4h     | ⬜      |
+| Documentation and runbooks     | P1       | 4h     | ⬜      |
+
 
 ---
 
@@ -263,25 +273,29 @@ gcloud secrets add-iam-policy-binding anthropic-api-key \
 
 ### New Files to Create
 
-| File | Purpose | Lines |
-|------|---------|-------|
-| `cloud_config.py` | Centralized configuration management | ~200 |
-| `gcs_storage.py` | Cloud Storage abstraction layer | ~250 |
-| `firestore_cache.py` | Firestore cache backend | ~300 |
-| `secrets_manager.py` | Secret Manager integration | ~150 |
-| `cloud_logging_config.py` | Cloud Logging setup | ~100 |
-| `cloudbuild.yaml` | CI/CD pipeline configuration | ~50 |
+
+| File                      | Purpose                              | Lines |
+| ------------------------- | ------------------------------------ | ----- |
+| `cloud_config.py`         | Centralized configuration management | ~200  |
+| `gcs_storage.py`          | Cloud Storage abstraction layer      | ~250  |
+| `firestore_cache.py`      | Firestore cache backend              | ~300  |
+| `secrets_manager.py`      | Secret Manager integration           | ~150  |
+| `cloud_logging_config.py` | Cloud Logging setup                  | ~100  |
+| `cloudbuild.yaml`         | CI/CD pipeline configuration         | ~50   |
+
 
 ### Files to Modify
 
-| File | Changes Required |
-|------|-----------------|
-| `Dockerfile` | Multi-stage build, $PORT env var, non-root user |
-| `requirements.txt` | Add GCP client libraries |
-| `utils_cache.py` | Add Firestore backend option |
-| `streamlit_app.py` | Replace tempfile with GCS |
-| `agent_estimation_app.py` | Replace tempfile with GCS |
-| `gemini_pdf_extractor.py` | Use Secret Manager for API keys |
+
+| File                      | Changes Required                                |
+| ------------------------- | ----------------------------------------------- |
+| `Dockerfile`              | Multi-stage build, $PORT env var, non-root user |
+| `requirements.txt`        | Add GCP client libraries                        |
+| `utils_cache.py`          | Add Firestore backend option                    |
+| `streamlit_app.py`        | Replace tempfile with GCS                       |
+| `agent_estimation_app.py` | Replace tempfile with GCS                       |
+| `gemini_pdf_extractor.py` | Use Secret Manager for API keys                 |
+
 
 ---
 
@@ -290,29 +304,26 @@ gcloud secrets add-iam-policy-binding anthropic-api-key \
 ### Identity-Aware Proxy (IAP) Setup
 
 1. **Enable IAP API**
-   ```bash
+  ```bash
    gcloud services enable iap.googleapis.com
-   ```
-
+  ```
 2. **Configure OAuth consent screen**
-   - Go to APIs & Services > OAuth consent screen
-   - Configure for Internal use (Google Workspace)
-
+  - Go to APIs & Services > OAuth consent screen
+  - Configure for Internal use (Google Workspace)
 3. **Enable IAP for Cloud Run**
-   ```bash
+  ```bash
    gcloud iap web enable \
      --resource-type=cloud-run \
      --service=hvac-estimator
-   ```
-
+  ```
 4. **Grant user access**
-   ```bash
+  ```bash
    gcloud iap web add-iam-policy-binding \
      --member="user:employee@company.com" \
      --role="roles/iap.httpsResourceAccessor" \
      --resource-type=cloud-run \
      --service=hvac-estimator
-   ```
+  ```
 
 ### VPC Service Controls (Optional)
 
@@ -397,16 +408,18 @@ gcloud run deploy hvac-estimator \
 
 ### Monthly GCP Costs (Estimated)
 
-| Service | Configuration | Estimated Cost |
-|---------|---------------|----------------|
-| **Cloud Run** | 2 vCPU, 2GB RAM, auto-scaling | $15-50/month |
-| **Cloud Storage** | 10GB storage, 100k operations | $5-15/month |
-| **Firestore** | 100k reads, 50k writes/month | $5-20/month |
-| **Secret Manager** | 3 secrets, 10k accesses | $20/month |
-| **Cloud Logging** | 10GB logs/month (free tier) | $0/month |
-| **Load Balancer** | Standard tier | $18/month |
-| **Cloud Armor** | Basic DDoS protection | $0-10/month |
-| **Total** | | **$63-133/month** |
+
+| Service            | Configuration                 | Estimated Cost    |
+| ------------------ | ----------------------------- | ----------------- |
+| **Cloud Run**      | 2 vCPU, 2GB RAM, auto-scaling | $15-50/month      |
+| **Cloud Storage**  | 10GB storage, 100k operations | $5-15/month       |
+| **Firestore**      | 100k reads, 50k writes/month  | $5-20/month       |
+| **Secret Manager** | 3 secrets, 10k accesses       | $20/month         |
+| **Cloud Logging**  | 10GB logs/month (free tier)   | $0/month          |
+| **Load Balancer**  | Standard tier                 | $18/month         |
+| **Cloud Armor**    | Basic DDoS protection         | $0-10/month       |
+| **Total**          |                               | **$63-133/month** |
+
 
 ### Cost Optimization Tips
 
@@ -424,21 +437,19 @@ gcloud run deploy hvac-estimator \
 Create a dashboard with these widgets:
 
 1. **Cloud Run Metrics**
-   - Request latency (p50, p95, p99)
-   - Request count
-   - Container instance count
-   - Memory utilization
-
+  - Request latency (p50, p95, p99)
+  - Request count
+  - Container instance count
+  - Memory utilization
 2. **Application Metrics**
-   - PDF processing time
-   - Quote generation time
-   - Cache hit rate
-   - API error rate
-
+  - PDF processing time
+  - Quote generation time
+  - Cache hit rate
+  - API error rate
 3. **Cost Metrics**
-   - API calls per hour
-   - Storage usage
-   - Firestore operations
+  - API calls per hour
+  - Storage usage
+  - Firestore operations
 
 ### Alerting Policies
 
@@ -484,14 +495,16 @@ gcloud run deploy hvac-estimator \
 
 ## Appendix: Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `GCP_PROJECT` | Yes (GCP) | - | GCP project ID |
-| `CACHE_BACKEND` | No | `file` | Cache backend: `file`, `firestore`, `redis` |
-| `STORAGE_BACKEND` | No | `local` | Storage backend: `local`, `gcs` |
-| `GCS_BUCKET` | Yes (GCS) | - | Cloud Storage bucket name |
-| `LOG_LEVEL` | No | `INFO` | Logging level |
-| `ANTHROPIC_API_KEY` | No | - | Anthropic API key (use Secret Manager in GCP) |
+
+| Variable            | Required  | Default | Description                                   |
+| ------------------- | --------- | ------- | --------------------------------------------- |
+| `GCP_PROJECT`       | Yes (GCP) | -       | GCP project ID                                |
+| `CACHE_BACKEND`     | No        | `file`  | Cache backend: `file`, `firestore`, `redis`   |
+| `STORAGE_BACKEND`   | No        | `local` | Storage backend: `local`, `gcs`               |
+| `GCS_BUCKET`        | Yes (GCS) | -       | Cloud Storage bucket name                     |
+| `LOG_LEVEL`         | No        | `INFO`  | Logging level                                 |
+| `ANTHROPIC_API_KEY` | No        | -       | Anthropic API key (use Secret Manager in GCP) |
+
 
 ---
 
