@@ -73,11 +73,5 @@ EXPOSE ${PORT}
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl --fail http://localhost:${PORT}/_stcore/health || exit 1
 
-# Entrypoint — Cloud Run sets PORT; local dev defaults to 8501.
-CMD sh -c 'streamlit run guaranteed_insulation_app.py \
-    --server.port=${PORT} \
-    --server.address=0.0.0.0 \
-    --server.headless=true \
-    --server.enableCORS=false \
-    --server.enableXsrfProtection=true \
-    --browser.gatherUsageStats=false'
+# Entrypoint — API-first runtime for Vertex agent services.
+CMD sh -c 'uvicorn agent_api:app --host 0.0.0.0 --port ${PORT}'

@@ -27,9 +27,19 @@ class TokenUsage:
 
 
 class ContentBlock:
-    def __init__(self, type: str, text: str):
+    def __init__(
+        self,
+        type: str,
+        text: str = "",
+        name: Optional[str] = None,
+        input: Optional[Dict[str, Any]] = None,
+        id: Optional[str] = None,
+    ):
         self.type = type
         self.text = text
+        self.name = name
+        self.input = input or {}
+        self.id = id
 
 
 class MessagesResponse:
@@ -110,7 +120,16 @@ class VertexAIMessagesClient:
         response = self._requests.post(url, headers=headers, json=payload, timeout=300)
         response.raise_for_status()
         data = response.json()
-        content = [ContentBlock(c.get("type", "text"), c.get("text", "")) for c in data.get("content", [])]
+        content = [
+            ContentBlock(
+                type=c.get("type", "text"),
+                text=c.get("text", ""),
+                name=c.get("name"),
+                input=c.get("input"),
+                id=c.get("id"),
+            )
+            for c in data.get("content", [])
+        ]
         usage = TokenUsage(input_tokens=data.get("usage", {}).get("input_tokens", 0), output_tokens=data.get("usage", {}).get("output_tokens", 0))
         return MessagesResponse(id=data.get("id", ""), type=data.get("type", "message"), role=data.get("role", "assistant"), content=content, model=data.get("model", model), stop_reason=data.get("stop_reason", ""), usage=usage)
 

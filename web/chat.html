@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FLNSMDFR Agent Chat</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; background: #f5f7fb; }
+      .wrap { max-width: 900px; margin: 24px auto; background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+      h1 { margin: 0 0 12px; font-size: 20px; }
+      #log { min-height: 360px; border: 1px solid #e1e5ee; border-radius: 8px; padding: 12px; overflow-y: auto; background: #fafcff; }
+      .msg { margin: 10px 0; }
+      .user { color: #0b4fdb; }
+      .assistant { color: #1f2937; }
+      .row { display: flex; gap: 8px; margin-top: 12px; }
+      #input { flex: 1; padding: 10px; border: 1px solid #cfd6e4; border-radius: 6px; }
+      button { padding: 10px 14px; border: 0; border-radius: 6px; background: #0b4fdb; color: white; cursor: pointer; }
+      button:disabled { background: #9db5eb; cursor: default; }
+      .meta { color: #67748a; font-size: 12px; margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>FLNSMDFR Vertex Agent Chat</h1>
+      <div id="log"></div>
+      <div class="row">
+        <input id="input" placeholder="Ask for an estimate, quote, or file operation..." />
+        <button id="send">Send</button>
+      </div>
+      <div class="meta">Session persists via Firestore cache when configured.</div>
+    </div>
+    <script>
+      let sessionId = null;
+      const log = document.getElementById("log");
+      const input = document.getElementById("input");
+      const sendBtn = document.getElementById("send");
+
+      function append(role, text) {
+        const div = document.createElement("div");
+        div.className = `msg ${role}`;
+        div.textContent = `${role === "user" ? "You" : "Agent"}: ${text}`;
+        log.appendChild(div);
+        log.scrollTop = log.scrollHeight;
+      }
+
+      async function send() {
+        const message = input.value.trim();
+        if (!message) return;
+        append("user", message);
+        input.value = "";
+        sendBtn.disabled = true;
+        try {
+          const res = await fetch("/agent/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message, session_id: sessionId })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || "Request failed");
+          sessionId = data.session_id;
+          append("assistant", data.message || "(no response)");
+        } catch (err) {
+          append("assistant", `Error: ${err.message}`);
+        } finally {
+          sendBtn.disabled = false;
+          input.focus();
+        }
+      }
+
+      sendBtn.addEventListener("click", send);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") send();
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,75 @@
+[
+  {
+    "id": "estimate-basic-duct",
+    "input": {
+      "project_name": "Eval - Basic Duct",
+      "specifications": [
+        {
+          "system_type": "duct",
+          "size_range": "all",
+          "thickness": 1.5,
+          "material": "fiberglass",
+          "facing": "FSK",
+          "special_requirements": [],
+          "location": "indoor"
+        }
+      ],
+      "measurements": [
+        {
+          "item_id": "D-1",
+          "system_type": "duct",
+          "size": "12x12",
+          "length": 100,
+          "location": "Main",
+          "fittings": {
+            "elbow": 2
+          }
+        }
+      ],
+      "markup": 1.15,
+      "labor_rate": 65.0,
+      "contingency_percent": 10.0
+    },
+    "assertions": {
+      "total_gt": 0
+    }
+  },
+  {
+    "id": "estimate-outdoor-pipe",
+    "input": {
+      "project_name": "Eval - Outdoor Pipe",
+      "specifications": [
+        {
+          "system_type": "pipe",
+          "size_range": "all",
+          "thickness": 1.0,
+          "material": "elastomeric",
+          "facing": "unfaced",
+          "special_requirements": [
+            "aluminum_jacket",
+            "stainless_bands"
+          ],
+          "location": "outdoor"
+        }
+      ],
+      "measurements": [
+        {
+          "item_id": "P-1",
+          "system_type": "pipe",
+          "size": "2\"",
+          "length": 80,
+          "location": "Roof",
+          "fittings": {
+            "elbow": 4
+          }
+        }
+      ],
+      "markup": 1.1,
+      "labor_rate": 70.0,
+      "contingency_percent": 12.0
+    },
+    "assertions": {
+      "total_gt": 0
+    }
+  }
+]

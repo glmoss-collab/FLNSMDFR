@@ -54,6 +54,37 @@ except Exception:
 import pdfplumber
 
 
+# Nominal Pipe Size (NPS) -> true Outer Diameter (OD) in inches, per ANSI/ASME B36.10
+# schedules. An engineering spec calling for "2\" pipe" means NPS 2, whose steel pipe
+# has an actual OD of 2.375". Jacketing/mastic wrap the *outside* of the insulated
+# assembly, so surface-area geometry must start from the actual OD — not the nominal
+# number — or the takeoff under-orders material on small pipe by 15-30%.
+NPS_TO_ACTUAL_OD: Dict[str, float] = {
+    "0.5": 0.840, "0.75": 1.050, "1": 1.315, "1.25": 1.660,
+    "1.5": 1.900, "2": 2.375, "2.5": 2.875, "3": 3.500,
+    "3.5": 4.000, "4": 4.500, "5": 5.563, "6": 6.625,
+    "8": 8.625, "10": 10.750, "12": 12.750, "14": 14.000,
+    "16": 16.000, "18": 18.000, "20": 20.000, "24": 24.000,
+}
+
+
+def normalize_system_family(system_type: str) -> str:
+    """Collapse a (possibly fine-grained) system type to the engine's coarse family.
+
+    The spec extractor emits fine-grained identities ("chilled_water_pipe",
+    "supply_duct") while measurements carry coarse families ("pipe", "duct"). Pricing
+    matches the two, so both sides must be reduced to the same vocabulary first.
+    """
+    s = (system_type or "").lower()
+    if "duct" in s:
+        return "duct"
+    if "pipe" in s or "piping" in s or "chw" in s or s.endswith("_hw") or "hot_water" in s:
+        return "pipe"
+    if "equipment" in s or s in {"ahu", "fcu", "vav"}:
+        return "equipment"
+    return s
+
+
 @dataclass
 class InsulationSpec:
     """Insulation specification extracted from project specs."""
@@ -91,6 +122,7 @@ class MaterialItem:
     unit_price: float
     total_price: float
     category: str  # "insulation", "jacket", "mastic", "accessories"
+    labor_factor: float = 1.0  # installation-difficulty multiplier (location/height)
 
 
 @dataclass
@@ -506,31 +538,43 @@ class PricingEngine:
             spec = self._find_applicable_spec(measurement, specs)
 
             if spec:
+                # Per-measurement installation-difficulty multiplier, stamped onto
+                # every material this measurement produces so calculate_labor can
+                # scale hours by real field conditions (location/height).
+                labor_factor = self._get_labor_factor(measurement, spec)
+                produced: List[MaterialItem] = []
+
                 # Calculate insulation material
-                insulation = self._calculate_insulation(measurement, spec)
-                materials.append(insulation)
+                produced.append(self._calculate_insulation(measurement, spec))
 
                 # Calculate facing/jacket
                 if spec.facing or "aluminum_jacket" in spec.special_requirements:
-                    jacket = self._calculate_jacketing(measurement, spec)
-                    materials.append(jacket)
+                    produced.append(self._calculate_jacketing(measurement, spec))
 
                 # Calculate mastic
                 if "mastic_coating" in spec.special_requirements:
-                    mastic = self._calculate_mastic(measurement, spec)
-                    materials.append(mastic)
+                    produced.append(self._calculate_mastic(measurement, spec))
 
                 # Calculate fittings/accessories
-                accessories = self._calculate_accessories(measurement, spec)
-                materials.extend(accessories)
+                produced.extend(self._calculate_accessories(measurement, spec))
+
+                for item in produced:
+                    item.labor_factor = labor_factor
+                materials.extend(produced)
 
         return materials
 
     def _find_applicable_spec(self, measurement: MeasurementItem, specs: List[InsulationSpec]) -> Optional[InsulationSpec]:
-        """Find the specification that applies to this measurement."""
+        """Find the specification that applies to this measurement.
 
+        Both sides are normalized to the coarse system family before comparison so a
+        fine-grained spec type ("chilled_water_pipe") still matches a coarse
+        measurement family ("pipe") instead of silently returning no spec.
+        """
+
+        target = normalize_system_family(measurement.system_type)
         for spec in specs:
-            if spec.system_type == measurement.system_type:
+            if normalize_system_family(spec.system_type) == target:
                 # Could add size range checking here
                 return spec
         return None
@@ -565,11 +609,9 @@ class PricingEngine:
     def _calculate_jacketing(self, measurement: MeasurementItem, spec: InsulationSpec) -> MaterialItem:
         """Calculate jacketing/facing material."""
 
-        # Convert linear feet to square feet based on size
-        # Simplified: assume average circumference
-        size_diameter = self._parse_size_to_diameter(measurement.size)
-        circumference = np.pi * (size_diameter + 2 * spec.thickness) / 12  # in feet
-        square_feet = measurement.length * circumference
+        # Convert linear feet to square feet using the true insulated-assembly
+        # cross-section (rectangular perimeter for duct, actual-OD circumference for pipe).
+        square_feet = measurement.length * self._perimeter_ft(measurement, spec)
 
         if "aluminum_jacket" in spec.special_requirements:
             description = f"Aluminum Jacketing - {measurement.size}"
@@ -591,9 +633,7 @@ class PricingEngine:
     def _calculate_mastic(self, measurement: MeasurementItem, spec: InsulationSpec) -> MaterialItem:
         """Calculate mastic coating."""
 
-        size_diameter = self._parse_size_to_diameter(measurement.size)
-        circumference = np.pi * (size_diameter + 2 * spec.thickness) / 12
-        square_feet = measurement.length * circumference
+        square_feet = measurement.length * self._perimeter_ft(measurement, spec)
 
         return MaterialItem(
             description="Mastic Vapor Seal Coating",
@@ -630,13 +670,73 @@ class PricingEngine:
         return accessories
 
     def _parse_size_to_diameter(self, size: str) -> float:
-        """Parse size string to diameter in inches."""
+        """Parse a pipe size string to its true outer diameter in inches.
+
+        Maps Nominal Pipe Size (NPS) to the actual ANSI OD when known, so geometry
+        starts from the real pipe surface (e.g. NPS 2 -> 2.375"), and falls back to
+        the raw number for sizes outside the table.
+        """
 
         # Handle various formats: "4\"", "4 inch", "4x6", etc.
         numbers = re.findall(r"\d+(?:\.\d+)?", size)
-        if numbers:
-            return float(numbers[0])
-        return 12.0  # default
+        if not numbers:
+            return 12.0  # safe fallback matching original default
+
+        nominal_str = numbers[0]
+        # Normalize "2.0" -> "2" so it matches the table keys.
+        if nominal_str.endswith(".0"):
+            nominal_str = nominal_str[:-2]
+        return NPS_TO_ACTUAL_OD.get(nominal_str, float(numbers[0]))
+
+    def _perimeter_ft(self, measurement: MeasurementItem, spec: InsulationSpec) -> float:
+        """Outer perimeter (feet) of the insulated assembly for one linear foot.
+
+        Multiplying this by length gives the jacketing/facing/mastic surface area.
+        Branches on system family because a rectangular duct and a round pipe have
+        fundamentally different cross-sections.
+        """
+
+        thickness = spec.thickness
+
+        if normalize_system_family(measurement.system_type) == "duct":
+            dims = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", measurement.size)]
+            if len(dims) >= 2:
+                width, height = dims[0], dims[1]
+                # Stretch-out perimeter with a corner build-up allowance: each of the
+                # four corners wraps an extra ~2x thickness of jacket/wrap.
+                perimeter_in = 2 * (width + height) + 8 * thickness
+                return perimeter_in / 12.0
+            if len(dims) == 1:
+                # Round duct given a single dimension: treat as a cylinder.
+                return np.pi * (dims[0] + 2 * thickness) / 12.0
+            return 4.0  # default fallback perimeter (feet)
+
+        # Pipe (and anything else): circumference over the actual insulated OD.
+        outer_diameter = self._parse_size_to_diameter(measurement.size)
+        return np.pi * (outer_diameter + 2 * thickness) / 12.0
+
+    def _get_labor_factor(self, measurement: MeasurementItem, spec: InsulationSpec) -> float:
+        """Installation-difficulty multiplier from location and elevation conditions.
+
+        Pulls the previously-unused premium/outdoor/height modifiers from the price
+        book so cramped mechanical rooms, weather exposure, and overhead work scale
+        labor hours instead of being ignored.
+        """
+
+        factor = self.prices.get("standard_labor", 1.0)
+
+        # Environmental difficulty.
+        if spec.location in ("outdoor", "exposed_to_weather", "exposed"):
+            factor *= self.prices.get("outdoor_labor", 1.15)
+        elif spec.location == "mechanical_room":
+            factor *= self.prices.get("premium_labor", 1.25)
+
+        # Elevation / overhead work, inferred from drawing notes or rise/drop count.
+        notes_flat = " ".join(measurement.notes).lower()
+        if "high" in notes_flat or "above" in notes_flat or measurement.elevation_changes > 2:
+            factor *= self.prices.get("height_labor", 1.20)
+
+        return factor
 
     def calculate_labor(self, materials: List[MaterialItem]) -> Tuple[float, float]:
         """Calculate labor hours and cost."""
@@ -649,11 +749,15 @@ class PricingEngine:
                     hours = material.quantity * self.labor_rates["duct_insulation"]
                 else:
                     hours = material.quantity * self.labor_rates["pipe_insulation"]
-                total_hours += hours
             elif material.category == "jacket":
-                total_hours += material.quantity * self.labor_rates["jacketing"]
+                hours = material.quantity * self.labor_rates["jacketing"]
             elif material.category == "mastic":
-                total_hours += material.quantity * self.labor_rates["mastic"]
+                hours = material.quantity * self.labor_rates["mastic"]
+            else:
+                continue
+
+            # Scale baseline hours by the item's installation-difficulty factor.
+            total_hours += hours * material.labor_factor
 
         # Add setup, cleanup, and supervision (20% overhead)
         total_hours *= 1.20
