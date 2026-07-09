@@ -163,7 +163,7 @@ steps:
         sleep 10
 
         # Health check
-        HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$SERVICE_URL/_stcore/health" || echo "000")
+        HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$SERVICE_URL/health" || echo "000")
 
         if [ "$HEALTH_STATUS" = "200" ]; then
           echo "Health check passed!"

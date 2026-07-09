@@ -71,7 +71,7 @@ EXPOSE ${PORT}
 
 # Health check endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl --fail http://localhost:${PORT}/_stcore/health || exit 1
+    CMD curl --fail http://localhost:${PORT}/health || exit 1
 
 # Entrypoint — API-first runtime for Vertex agent services.
 CMD sh -c 'uvicorn agent_api:app --host 0.0.0.0 --port ${PORT}'
