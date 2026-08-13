@@ -1,0 +1,182 @@
+================================================================================
+ GCLOUD TERMINAL GUIDE - FLNSMDFR2.0 CLOUD RUN DEPLOY (from where you left off)
+ Companion to: deploy-gcloud.ps1   |   Project: insulation-estimator (us-east1)
+ For: Garrett - Guaranteed Insulation Inc.   |   2026-06-03
+================================================================================
+
+--------------------------------------------------------------------------------
+ 0. WHERE YOU ARE RIGHT NOW
+--------------------------------------------------------------------------------
+ Done so far (from your terminal session):
+   [x] gemini-api-key secret created (version 1)
+   [x] secretAccessor granted to hvac-estimator-sa on gemini-api-key
+   [x] Build submitted with _TAG via:  $tag = Get-Date -Format yyyyMMdd-HHmm
+
+ Two builds failed. Both errors decoded below. The cloudbuild.yaml has now
+ been FIXED for error #2, and deploy-gcloud.ps1 handles the remaining setup.
+
+
+--------------------------------------------------------------------------------
+ 1. THE TWO ERRORS, DECODED
+--------------------------------------------------------------------------------
+ ERROR 1:  INVALID_ARGUMENT: key in the template "SERVICE_URL" is not a valid
+           built-in substitution
+   Cause:  Cloud Build pre-scans cloudbuild.yaml and treats every $VARIABLE
+           as a substitution it must supply. Shell variables inside build
+           steps must be escaped as $$VARIABLE so Cloud Build leaves them
+           for bash. (Your current yaml already escapes these - this error
+           was from the earlier version.)
+   Rule:   $_FOO       -> Cloud Build substitution (yours start with _)
+           $PROJECT_ID -> Cloud Build built-in
+           $$FOO       -> literal $FOO passed to the shell
+
+ ERROR 2:  BUILD FAILURE: build step 0 "python:3.10-slim" failed: exit status 2
+   Cause:  Step 0 ran `pytest tests/`. Bare pytest does NOT put the repo
+           root (/workspace) on sys.path, so `from pydantic_models import ...`
+           inside the tests fails at collection -> pytest exit code 2.
+           It passes on your machine because you run it from an activated
+           venv at the repo root with `python -m pytest` semantics.
+   Fix:    cloudbuild.yaml step 0 now runs `python -m pytest tests/ -v`
+           (python -m adds the current directory to sys.path). Already applied.
+
+ BONUS FIX APPLIED: the staging deploy now passes
+           --service-account hvac-estimator-sa@...
+   Without it, staging runs as the default compute SA, which can't read
+   your secrets -> the deploy step would have been your NEXT failure.
+
+ Pytest exit codes cheat sheet (for reading future build logs):
+   0 all passed | 1 tests failed | 2 collection/interrupt error
+   3 internal error | 4 usage error | 5 no tests collected
+
+
+--------------------------------------------------------------------------------
+ 2. THE FAST PATH (what to type next)
+--------------------------------------------------------------------------------
+       cd "C:\Users\glmos\Dev\FLNSMDFR2.0"
+       Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+       .\deploy-gcloud.ps1 -SetupOnly      # verify project setup, no build
+       .\deploy-gcloud.ps1                 # full build + deploy UI to staging
+
+ The script is idempotent - re-run it freely. It will prompt for the
+ Anthropic API key if the anthropic-api-key secret doesn't exist yet
+ (cloudbuild.yaml references it, so the deploy fails without it).
+
+ When staging looks good:
+       .\deploy-gcloud.ps1 -Environment production
+
+ Dropbox auto-intake Job + Scheduler (see docs/GCP_INTAKE_WORKER.md):
+       .\deploy-gcloud.ps1 -DropboxProjectsRoot "/Estimating/Projects"
+       gcloud run jobs execute hvac-estimator-intake-staging --region us-east1 --wait
+       .\scripts\smoke-intake.ps1            # local wiring checks
+       .\scripts\smoke-intake.ps1 -CheckGcp  # after deploy + gcloud auth
+
+
+--------------------------------------------------------------------------------
+ 3. ONE-TIME SETUP THE SCRIPT AUTOMATES (manual equivalents)
+--------------------------------------------------------------------------------
+   Enable APIs:
+       gcloud services enable run.googleapis.com cloudbuild.googleapis.com `
+         artifactregistry.googleapis.com secretmanager.googleapis.com
+
+   Artifact Registry repo (images now live here, NOT gcr.io):
+       gcloud artifacts repositories create hvac --repository-format=docker `
+         --location=us-east1
+
+   Create a secret without the key touching shell history (your pattern - keep it):
+       $k = Read-Host "API key" -AsSecureString
+       [System.Net.NetworkCredential]::new("", $k).Password |
+         gcloud secrets create anthropic-api-key --data-file=-
+
+   Let the runtime SA read a secret:
+       gcloud secrets add-iam-policy-binding anthropic-api-key `
+         --member="serviceAccount:hvac-estimator-sa@insulation-estimator.iam.gserviceaccount.com" `
+         --role="roles/secretmanager.secretAccessor"
+
+   Cloud Build's service account (the default compute SA on newer projects)
+   also needs: roles/run.admin, roles/artifactregistry.writer, and
+   iam.serviceAccountUser ON hvac-estimator-sa. The script grants all three.
+
+
+--------------------------------------------------------------------------------
+ 4. THE DEPLOY LOOP (day-to-day)
+--------------------------------------------------------------------------------
+   1) Test locally BEFORE submitting (a cloud build costs ~10 min; local ~30 s):
+       .\.venv-gi\Scripts\Activate.ps1          # or your project venv
+       python -m pytest tests/ -v --tb=short    # same command the build runs
+
+   2) Commit, then deploy:
+       git add . ; git commit -m "msg"
+       .\deploy-gcloud.ps1
+
+   3) Watch / debug:
+       gcloud builds list --limit=5                  # recent builds + status
+       gcloud builds log <BUILD_ID>                  # full log of one build
+       gcloud builds log <BUILD_ID> | Select-String "FAIL","ERROR"   # just failures
+
+   4) Check the running service:
+       gcloud run services list --region us-east1
+       gcloud run services describe hvac-estimator-staging --region us-east1 `
+         --format "value(status.url)"
+       gcloud beta run services logs tail hvac-estimator-staging --region us-east1
+
+   5) Roll back (Cloud Run keeps every revision):
+       gcloud run revisions list --service hvac-estimator-staging --region us-east1
+       gcloud run services update-traffic hvac-estimator-staging `
+         --region us-east1 --to-revisions <REVISION>=100
+
+
+--------------------------------------------------------------------------------
+ 5. READING A FAILED BUILD (triage order)
+--------------------------------------------------------------------------------
+   step 0  run-tests          -> a test or import broke. Reproduce locally with
+                                 `python -m pytest tests/ -v` in a CLEAN venv
+                                 (stale local packages hide missing requirements).
+   step 1  build-image        -> Dockerfile problem. Reproduce locally:
+                                 docker build -t test .
+   step 2  push-image         -> Artifact Registry permissions or repo missing.
+   step 3  deploy-staging     -> usually IAM: secrets access or serviceAccountUser.
+                                 Read the LAST 20 lines of the step log.
+   step 5  smoke-test         -> container started but app unhealthy. Check:
+                                 gcloud beta run services logs tail ... and look
+                                 for Python tracebacks at startup.
+
+   "gcloud builds submit only displays logs from Cloud Storage" notice:
+   harmless - your yaml uses CLOUD_LOGGING_ONLY, so use `gcloud builds log`
+   or the console link it prints instead of the inline stream.
+
+
+--------------------------------------------------------------------------------
+ 6. SECRETS - EVERYDAY COMMANDS
+--------------------------------------------------------------------------------
+       gcloud secrets list
+       gcloud secrets versions list gemini-api-key
+   Rotate a key (new version becomes :latest automatically on next deploy):
+       $k = Read-Host "new key" -AsSecureString
+       [System.Net.NetworkCredential]::new("", $k).Password |
+         gcloud secrets versions add gemini-api-key --data-file=-
+   Verify (prints the key - clear the screen after):
+       gcloud secrets versions access latest --secret gemini-api-key ; cls
+
+ NEVER: paste a key as a plain command argument, or echo it into a file.
+ Your Read-Host -AsSecureString pattern keeps it out of PSReadLine history.
+
+
+--------------------------------------------------------------------------------
+ 7. POWERSHELL QUALITY-OF-LIFE FOR THIS PROJECT
+--------------------------------------------------------------------------------
+ Add to your profile (notepad $PROFILE), then open a new terminal:
+
+   function flns { cd "C:\Users\glmos\Dev\FLNSMDFR2.0\FLNSMDFR-main" }
+   function gbl  { gcloud builds list --limit=5 }
+   function deploy { flns; .\deploy-gcloud.ps1 @args }
+   function stlogs { gcloud beta run services logs tail hvac-estimator-staging --region us-east1 }
+
+ Now `deploy` runs staging, `deploy -Environment production` ships prod.
+
+ PowerShell line continuation is the BACKTICK ` (not \ like bash). The >>
+ prompt means PowerShell is waiting for the rest of the command - Ctrl+C
+ cancels if you got there by accident.
+
+================================================================================
+ END - next step:  .\deploy-gcloud.ps1 -SetupOnly
+================================================================================

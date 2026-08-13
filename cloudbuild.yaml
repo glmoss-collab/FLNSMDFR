@@ -27,11 +27,20 @@
 
 substitutions:
   _SERVICE_NAME: hvac-estimator
-  _REGION: us-central1
+  _REGION: us-east1
   _AR_REPO: hvac
   _ENVIRONMENT: staging
+  # Image tag. ${_TAG} is only populated by git-triggered builds, so manual
+  # `gcloud builds submit` runs must pass _TAG (e.g. a timestamp or git sha).
+  _TAG: manual
   _MIN_INSTANCES: "0"
   _MAX_INSTANCES: "10"
+  # Dropbox intake Job. Empty = skip Job + Scheduler (UI-only deploy).
+  # Pass e.g. _DROPBOX_PROJECTS_ROOT=/Estimating/Projects to enable.
+  _DROPBOX_PROJECTS_ROOT: ""
+  _PRICE_MARKUP: "1.15"
+  _PRICEBOOK_PATH: "/app/pricebook_sample.json"
+  _SCHEDULER_CRON: "*/10 * * * *"
 
 options:
   logging: CLOUD_LOGGING_ONLY
@@ -48,7 +57,10 @@ steps:
       - '-c'
       - |
         pip install -r requirements.txt
-        pytest tests/ -v --tb=short
+        # python -m pytest (NOT bare pytest): adds /workspace to sys.path so
+        # tests can import repo-root modules (pydantic_models, errors, etc.).
+        # Bare pytest exits 2 with collection errors here.
+        python -m pytest tests/ -v --tb=short
 
   # -------------------------------------------------------------------------
   # Step 2: Build Docker Image (Artifact Registry)
@@ -60,7 +72,7 @@ steps:
     args:
       - 'build'
       - '-t'
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:$COMMIT_SHA'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:${_TAG}'
       - '-t'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:${_ENVIRONMENT}'
       - '-t'
@@ -92,12 +104,17 @@ steps:
       - 'deploy'
       - '${_SERVICE_NAME}-staging'
       - '--image'
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:$COMMIT_SHA'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:${_TAG}'
       - '--region'
       - '${_REGION}'
       - '--platform'
       - 'managed'
-      - '--allow-unauthenticated'
+      # Org policy (Domain Restricted Sharing) blocks allUsers, so
+      # --allow-unauthenticated can never take effect (verified 2026-06-03:
+      # FAILED_PRECONDITION "users do not belong to a permitted customer").
+      # Keep staging private; open it in a browser with:
+      #   gcloud run services proxy hvac-estimator-staging --region us-east1
+      - '--no-allow-unauthenticated'
       - '--memory'
       - '2Gi'
       - '--cpu'
@@ -110,6 +127,12 @@ steps:
       - '300'
       - '--concurrency'
       - '10'
+      # Run staging as the same SA as production so secret IAM grants
+      # (secretmanager.secretAccessor on hvac-estimator-sa) cover both.
+      # Without this, staging runs as the default compute SA, which has
+      # no access to anthropic-api-key / gemini-api-key -> deploy fails.
+      - '--service-account'
+      - 'hvac-estimator-sa@$PROJECT_ID.iam.gserviceaccount.com'
       - '--set-env-vars'
       - 'GCP_PROJECT=$PROJECT_ID,ENVIRONMENT=staging,CACHE_BACKEND=firestore,STORAGE_BACKEND=gcs,GCS_BUCKET=$PROJECT_ID-hvac-uploads-staging,LOG_LEVEL=INFO'
       - '--set-secrets'
@@ -128,7 +151,7 @@ steps:
         if [ "${_ENVIRONMENT}" = "production" ]; then
           echo "Deploying to production..."
           gcloud run deploy ${_SERVICE_NAME} \
-            --image ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:$COMMIT_SHA \
+            --image ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:${_TAG} \
             --region ${_REGION} \
             --platform managed \
             --no-allow-unauthenticated \
@@ -147,7 +170,92 @@ steps:
     waitFor: ['deploy-staging']
 
   # -------------------------------------------------------------------------
-  # Step 6: Run Smoke Tests
+  # Step 6: Deploy Dropbox intake Job + Scheduler (when root is set)
+  # -------------------------------------------------------------------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-intake-job'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -euo pipefail
+        ROOT="${_DROPBOX_PROJECTS_ROOT}"
+        if [ -z "$$ROOT" ]; then
+          echo "Skipping intake Job (_DROPBOX_PROJECTS_ROOT empty)"
+          exit 0
+        fi
+
+        if [ "${_ENVIRONMENT}" = "production" ]; then
+          JOB_NAME="${_SERVICE_NAME}-intake"
+          ENV_NAME=production
+          SCHED_NAME="${_SERVICE_NAME}-intake-poll"
+        else
+          JOB_NAME="${_SERVICE_NAME}-intake-staging"
+          ENV_NAME=staging
+          SCHED_NAME="${_SERVICE_NAME}-intake-poll-staging"
+        fi
+
+        IMAGE="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:${_TAG}"
+        SA="hvac-estimator-sa@$PROJECT_ID.iam.gserviceaccount.com"
+
+        # Mount Dropbox secrets that exist (access token and/or refresh flow).
+        SECRETS="ANTHROPIC_API_KEY=anthropic-api-key:latest"
+        for pair in \
+          "DROPBOX_ACCESS_TOKEN=dropbox-access-token" \
+          "DROPBOX_REFRESH_TOKEN=dropbox-refresh-token" \
+          "DROPBOX_APP_KEY=dropbox-app-key" \
+          "DROPBOX_APP_SECRET=dropbox-app-secret"; do
+          ENV_KEY=$${pair%%=*}
+          SECRET_ID=$${pair#*=}
+          if gcloud secrets describe "$$SECRET_ID" >/dev/null 2>&1; then
+            SECRETS="$$SECRETS,$$ENV_KEY=$$SECRET_ID:latest"
+          fi
+        done
+
+        echo "Deploying Job $$JOB_NAME (MODE=intake, timeout 3600s)"
+        gcloud run jobs deploy "$$JOB_NAME" \
+          --image "$$IMAGE" \
+          --region "${_REGION}" \
+          --service-account "$$SA" \
+          --memory 2Gi \
+          --cpu 2 \
+          --task-timeout 3600 \
+          --max-retries 1 \
+          --command /app/docker-entrypoint.sh \
+          --set-env-vars "MODE=intake,GCP_PROJECT=$PROJECT_ID,ENVIRONMENT=$$ENV_NAME,CACHE_BACKEND=firestore,DROPBOX_PROJECTS_ROOT=$$ROOT,PRICEBOOK_PATH=${_PRICEBOOK_PATH},PRICE_MARKUP=${_PRICE_MARKUP},LOG_LEVEL=INFO" \
+          --set-secrets "$$SECRETS"
+
+        gcloud run jobs add-iam-policy-binding "$$JOB_NAME" \
+          --region "${_REGION}" \
+          --member="serviceAccount:$$SA" \
+          --role="roles/run.invoker" \
+          --quiet || true
+
+        URI="https://${_REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/$${JOB_NAME}:run"
+        echo "Ensuring Scheduler $$SCHED_NAME → $$URI"
+        if gcloud scheduler jobs describe "$$SCHED_NAME" --location="${_REGION}" >/dev/null 2>&1; then
+          gcloud scheduler jobs update http "$$SCHED_NAME" \
+            --location="${_REGION}" \
+            --schedule="${_SCHEDULER_CRON}" \
+            --uri="$$URI" \
+            --http-method=POST \
+            --oauth-service-account-email="$$SA" \
+            --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform"
+        else
+          gcloud scheduler jobs create http "$$SCHED_NAME" \
+            --location="${_REGION}" \
+            --schedule="${_SCHEDULER_CRON}" \
+            --uri="$$URI" \
+            --http-method=POST \
+            --oauth-service-account-email="$$SA" \
+            --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
+            --time-zone="America/New_York"
+        fi
+        echo "Intake Job + Scheduler ready: $$JOB_NAME"
+    waitFor: ['push-image']
+
+  # -------------------------------------------------------------------------
+  # Step 7: Run Smoke Tests (UI health)
   # -------------------------------------------------------------------------
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'smoke-test'
@@ -157,18 +265,24 @@ steps:
       - |
         echo "Running smoke tests..."
         SERVICE_URL=$(gcloud run services describe ${_SERVICE_NAME}-staging --region ${_REGION} --format 'value(status.url)')
-        echo "Service URL: $SERVICE_URL"
+        echo "Service URL: $$SERVICE_URL"
 
         # Wait for service to be ready
         sleep 10
 
-        # Health check
-        HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$SERVICE_URL/_stcore/health" || echo "000")
+        # Health check - service is private (org policy), so authenticate as
+        # the build SA. Requires roles/run.invoker on the build SA (granted
+        # by deploy-gcloud.ps1).
+        # NOTE: `gcloud auth print-identity-token` does NOT work inside Cloud
+        # Build (no identity token from metadata creds) - fetch the ID token
+        # straight from the metadata server with the service URL as audience.
+        TOKEN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=$$SERVICE_URL")
+        HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $$TOKEN" "$$SERVICE_URL/_stcore/health" || echo "000")
 
-        if [ "$HEALTH_STATUS" = "200" ]; then
+        if [ "$$HEALTH_STATUS" = "200" ]; then
           echo "Health check passed!"
         else
-          echo "Health check failed with status: $HEALTH_STATUS"
+          echo "Health check failed with status: $$HEALTH_STATUS"
           exit 1
         fi
     waitFor: ['deploy-staging']
@@ -177,7 +291,7 @@ steps:
 # Images to push (Artifact Registry)
 # -------------------------------------------------------------------------
 images:
-  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:${_TAG}'
   - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:${_ENVIRONMENT}'
   - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:latest'
 

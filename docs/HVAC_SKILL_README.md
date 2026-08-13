@@ -539,6 +539,8 @@ For issues or questions:
 - Check the examples in `hvac_skill_example.py`
 - Review the architecture in `CLAUDE_AGENTS_ARCHITECTURE.md`
 - See setup instructions in `AGENT_SETUP_GUIDE.md`
+- Local Dropbox auto-intake test: [`LOCAL_AUTO_INTAKE.md`](LOCAL_AUTO_INTAKE.md)
+- GCP intake worker (Cloud Run Job + Scheduler): [`GCP_INTAKE_WORKER.md`](GCP_INTAKE_WORKER.md)
 
 ## Version History
 

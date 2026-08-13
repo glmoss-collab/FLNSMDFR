@@ -60,6 +60,11 @@ RUN pip install --no-cache-dir /wheels/* \
 # (.git, _diffs, __pycache__, tests, docs, etc.)
 COPY --chown=appuser:appgroup . .
 
+# MODE=ui (default) → Streamlit; MODE=intake → dropbox_intake.py (Cloud Run Job).
+# Normalize CRLF→LF so the script runs under Linux regardless of git autocrlf.
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh \
+    && chmod +x /app/docker-entrypoint.sh
+
 # Create cache directory with proper permissions
 RUN mkdir -p /app/.cache && chown -R appuser:appgroup /app/.cache
 
@@ -69,15 +74,10 @@ USER appuser
 # Expose port (Cloud Run will override with $PORT)
 EXPOSE ${PORT}
 
-# Health check endpoint
+# Health check endpoint (UI mode only; Jobs do not use HEALTHCHECK)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl --fail http://localhost:${PORT}/_stcore/health || exit 1
 
-# Entrypoint — Cloud Run sets PORT; local dev defaults to 8501.
-CMD sh -c 'streamlit run guaranteed_insulation_app.py \
-    --server.port=${PORT} \
-    --server.address=0.0.0.0 \
-    --server.headless=true \
-    --server.enableCORS=false \
-    --server.enableXsrfProtection=true \
-    --browser.gatherUsageStats=false'
+# Default MODE=ui keeps the Streamlit service contract. Jobs set MODE=intake.
+ENV MODE=ui
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
